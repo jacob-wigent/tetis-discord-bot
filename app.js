@@ -44,6 +44,15 @@ function addToHistory(channelId, role, content) {
 }
 
 /**
+ * Format conversation history into a context string
+ */
+function formatHistoryContext(history) {
+  return history
+    .map((msg) => `${msg.role === 'user' ? 'User' : 'Tetis'}: ${msg.content}`)
+    .join('\n');
+}
+
+/**
  * Interactions endpoint URL where Discord will send HTTP requests
  * Parse request body and verifies incoming requests using discord-interactions package
  */
@@ -78,11 +87,18 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
       try {
         // Get conversation history for this channel
         const history = getConversationHistory(channelId);
+        console.log(`\n[Channel ${channelId}] User Question:`, prompt);
+
+        // Format conversation context and include in prompt
+        const historyContext = formatHistoryContext(history);
+        const enhancedPrompt = historyContext 
+          ? `Conversation history:\n${historyContext}\n\nNew question: ${prompt}`
+          : prompt;
 
         // Prepare the request with conversation context
         const requestBody = {
-          prompt,
-          history, // Include full conversation history
+          prompt: enhancedPrompt,
+          history, // Include full conversation history array as well
         };
 
         const response = await fetch(SERVER_URL, {
@@ -97,10 +113,12 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
 
         const data = await response.json();
         const reply = (data.reply || 'Error: no reply returned').toString();
+        console.log(`[Channel ${channelId}] Tetis Answer:`, reply);
         
         // Add user message and assistant reply to history
         addToHistory(channelId, 'user', prompt);
         addToHistory(channelId, 'assistant', reply);
+        console.log(`[Channel ${channelId}] History length after update: ${getConversationHistory(channelId).length}\n`);
 
         const echoedQuestion = `**You**: ${prompt}`;
         const fullReply = `**Tetis**: ${reply}`;
@@ -122,11 +140,14 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
 
     if (name === 'lobotomize') {
       const channelId = req.body.channel_id;
+      const historyLength = getConversationHistory(channelId).length;
       conversationHistory.delete(channelId);
+      console.log(`\n[Channel ${channelId}] Lobotomize command executed. Cleared ${historyLength} messages from history.\n`);
       
       return res.send({
         type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: '🧠 Memory cleared. Tetis has been lobotomized for this channel.' },
+        data: { content: "Bluh bluh bluh. Tetis has been lobotomized for this channel. It's probably for the best."
+         },
       });
     }
 
