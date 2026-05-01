@@ -76,6 +76,8 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
     if (name === 'ask') {
       const prompt = data.options?.find((option) => option.name === 'prompt')?.value;
       const channelId = req.body.channel_id;
+      const interactionToken = req.body.token;
+      const applicationId = process.env.APP_ID;
 
       if (!prompt) {
         return res.send({
@@ -84,58 +86,78 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
         });
       }
 
-      try {
-        // Get conversation history for this channel
-        const history = getConversationHistory(channelId);
-        console.log(`\n[Channel ${channelId}] User Question:`, prompt);
+      // Defer the interaction immediately to acknowledge the command
+      // This gives us up to 15 minutes to send the follow-up response
+      res.send({
+        type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+      });
 
-        // Format conversation context and include in prompt
-        const historyContext = formatHistoryContext(history);
-        const enhancedPrompt = historyContext 
-          ? `Conversation history:\n${historyContext}\n\nNew question: ${prompt}`
-          : prompt;
+      // Handle the LLM request asynchronously (don't await, fire and forget)
+      (async () => {
+        try {
+          // Get conversation history for this channel
+          const history = getConversationHistory(channelId);
+          console.log(`\n[Channel ${channelId}] User Question:`, prompt);
 
-        // Prepare the request with conversation context
-        const requestBody = {
-          prompt: enhancedPrompt,
-          history, // Include full conversation history array as well
-        };
+          // Format conversation context and include in prompt
+          const historyContext = formatHistoryContext(history);
+          const enhancedPrompt = historyContext 
+            ? `Conversation history:\n${historyContext}\n\nNew question: ${prompt}`
+            : prompt;
 
-        const response = await fetch(SERVER_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestBody),
-        });
+          // Prepare the request with conversation context
+          const requestBody = {
+            prompt: enhancedPrompt,
+            history, // Include full conversation history array as well
+          };
 
-        if (!response.ok) {
-          throw new Error(`Backend returned ${response.status}`);
+          const response = await fetch(SERVER_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody),
+          });
+
+          if (!response.ok) {
+            throw new Error(`Backend returned ${response.status}`);
+          }
+
+          const data = await response.json();
+          const reply = (data.reply || 'Error: no reply returned').toString();
+          console.log(`[Channel ${channelId}] Tetis Answer:`, reply);
+          
+          // Add user message and assistant reply to history
+          addToHistory(channelId, 'user', prompt);
+          addToHistory(channelId, 'assistant', reply);
+          console.log(`[Channel ${channelId}] History length after update: ${getConversationHistory(channelId).length}\n`);
+
+          const echoedQuestion = `**You**: ${prompt}`;
+          const fullReply = `**Tetis**: ${reply}`;
+          const maxDiscordMessageLength = 2000;
+          const content = `${echoedQuestion}\n${fullReply}`.slice(0, maxDiscordMessageLength);
+
+          // Edit the deferred response via webhook
+          const webhookUrl = `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}/messages/@original`;
+          await fetch(webhookUrl, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content }),
+          });
+        } catch (error) {
+          console.error('LLM request failed:', error);
+          // Edit the deferred response with error message via webhook
+          const webhookUrl = `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}/messages/@original`;
+          await fetch(webhookUrl, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              content: 'Tetis could not reach the backend right now. Please try again.' 
+            }),
+          }).catch(err => console.error('Failed to send error webhook:', err));
         }
+      })();
 
-        const data = await response.json();
-        const reply = (data.reply || 'Error: no reply returned').toString();
-        console.log(`[Channel ${channelId}] Tetis Answer:`, reply);
-        
-        // Add user message and assistant reply to history
-        addToHistory(channelId, 'user', prompt);
-        addToHistory(channelId, 'assistant', reply);
-        console.log(`[Channel ${channelId}] History length after update: ${getConversationHistory(channelId).length}\n`);
-
-        const echoedQuestion = `**You**: ${prompt}`;
-        const fullReply = `**Tetis**: ${reply}`;
-        const maxDiscordMessageLength = 2000;
-        const content = `${echoedQuestion}\n${fullReply}`.slice(0, maxDiscordMessageLength);
-
-        return res.send({
-          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-          data: { content },
-        });
-      } catch (error) {
-        console.error('LLM request failed:', error);
-        return res.send({
-          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-          data: { content: 'Tetis could not reach the backend right now. Please try again.' },
-        });
-      }
+      // Return early to prevent trying to send another response
+      return;
     }
 
     if (name === 'lobotomize') {
