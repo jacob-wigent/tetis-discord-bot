@@ -6,8 +6,17 @@ import {
   verifyKeyMiddleware,
 } from 'discord-interactions';
 
-const SERVER_URL = 'https://gpt-backend-7wpo.onrender.com/ask';
+const SERVER_URL = process.env.BACKEND_SERVER_URL || null;
 const MAX_HISTORY_PER_CHANNEL = 20; // Max message pairs to keep per channel
+
+// Map entries map arrays of user IDs to a magic word that will be prepended
+// to the prompt sent to the backend for recognition/behavior.
+const MAGIC_WORD_MAP = [
+  { users: ['246323461109186560'], magic: process.env.CADISTAN_STYLE_SECRET || null},
+  { users: ['1095063948371431446'], magic: process.env.STUPID_STYLE_SECRET || null},
+  { users: ['536992895731892252', '1407380855688659036'], magic: process.env.RUDE_STYLE_SECRET || null},
+  { users: ['475447912730460160', '572154995302989844'], magic: process.env.LINKEDIN_STYLE_SECRET || null}
+];
 
 // Create an express app
 const app = express();
@@ -52,6 +61,19 @@ function formatHistoryContext(history) {
     .join('\n');
 }
 
+function getInteractionUserId(payload) {
+  return payload.member?.user?.id ?? payload.user?.id ?? payload.user_id ?? null;
+}
+
+function getMagicWordForUser(payload) {
+  const userId = getInteractionUserId(payload);
+  if (!userId) return null;
+  for (const entry of MAGIC_WORD_MAP) {
+    if (entry.users.includes(userId)) return entry.magic;
+  }
+  return null;
+}
+
 /**
  * Interactions endpoint URL where Discord will send HTTP requests
  * Parse request body and verifies incoming requests using discord-interactions package
@@ -78,6 +100,9 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
       const channelId = req.body.channel_id;
       const interactionToken = req.body.token;
       const applicationId = process.env.APP_ID;
+      const magicWord = getMagicWordForUser(req.body);
+      const useMagic = Boolean(magicWord);
+      const styleLogTag = useMagic ? `[MAGIC:${magicWord}]` : '';
 
       if (!prompt) {
         return res.send({
@@ -97,19 +122,35 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
         try {
           // Get conversation history for this channel
           const history = getConversationHistory(channelId);
-          console.log(`\n[Channel ${channelId}] User Question:`, prompt);
+          console.log(`\n${styleLogTag} [Channel ${channelId}] User Question:`, prompt);
 
           // Format conversation context and include in prompt
-          const historyContext = formatHistoryContext(history);
-          const enhancedPrompt = historyContext 
+          let historyContext = formatHistoryContext(history);
+          let enhancedPrompt = historyContext
             ? `Conversation history:\n${historyContext}\n\nNew question: ${prompt}`
-            : prompt;
+            : `${prompt}`;
+
+          // Prepend magic word to the prompt when applicable so backend can detect it
+          if (useMagic) {
+            enhancedPrompt = `${magicWord}\n\n${enhancedPrompt}`;
+          }
 
           // Prepare the request with conversation context
           const requestBody = {
             prompt: enhancedPrompt,
             history, // Include full conversation history array as well
           };
+
+          // If no backend URL is configured, inform the user and stop.
+          if (!SERVER_URL) {
+            const webhookUrl = `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}/messages/@original`;
+            await fetch(webhookUrl, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ content: 'Tetis is down 🥀' }),
+            }).catch(err => console.error('Failed to send backend-missing webhook:', err));
+            return;
+          }
 
           const response = await fetch(SERVER_URL, {
             method: 'POST',
@@ -123,7 +164,7 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
 
           const data = await response.json();
           const reply = (data.reply || 'Error: no reply returned').toString();
-          console.log(`[Channel ${channelId}] Tetis Answer:`, reply);
+          console.log(`${styleLogTag} [Channel ${channelId}] Tetis Answer:`, reply);
           
           // Add user message and assistant reply to history
           addToHistory(channelId, 'user', prompt);
@@ -144,14 +185,12 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
           });
         } catch (error) {
           console.error('LLM request failed:', error);
-          // Edit the deferred response with error message via webhook
+          // Edit the deferred response with generic down message via webhook
           const webhookUrl = `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}/messages/@original`;
           await fetch(webhookUrl, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-              content: 'Tetis could not reach the backend right now. Please try again.' 
-            }),
+            body: JSON.stringify({ content: 'Tetis is down 🥀' }),
           }).catch(err => console.error('Failed to send error webhook:', err));
         }
       })();
