@@ -8,6 +8,7 @@ import {
 
 const SERVER_URL = process.env.BACKEND_SERVER_URL || null;
 const MAX_HISTORY_PER_CHANNEL = 20; // Max message pairs to keep per channel
+const ADMIN_USER_ID = '489538771214270464';
 
 // Map entries map arrays of user IDs to a magic word that will be prepended
 // to the prompt sent to the backend for recognition/behavior.
@@ -97,6 +98,14 @@ function getInteractionUserId(payload) {
 
 function getMagicWordForUser(payload) {
   const userId = getInteractionUserId(payload);
+  if (!userId) return null;
+  for (const entry of MAGIC_WORD_MAP) {
+    if (entry.users.includes(userId)) return entry.magic;
+  }
+  return null;
+}
+
+function getMagicWordForUserId(userId) {
   if (!userId) return null;
   for (const entry of MAGIC_WORD_MAP) {
     if (entry.users.includes(userId)) return entry.magic;
@@ -198,6 +207,122 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
           console.log(`[Channel ${channelId}] History length after update: ${getConversationHistory(channelId).length}\n`);
 
           const echoedQuestion = `**You**: ${prompt}`;
+          const fullReply = `**Tetis**: ${reply}`;
+          const maxDiscordMessageLength = 2000;
+          const content = `${echoedQuestion}\n${fullReply}`.slice(0, maxDiscordMessageLength);
+
+          // Edit the deferred response via webhook
+          const webhookUrl = `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}/messages/@original`;
+          await fetch(webhookUrl, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content }),
+          });
+        } catch (error) {
+          console.error('LLM request failed:', error);
+          // Edit the deferred response with generic down message via webhook
+          const webhookUrl = `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}/messages/@original`;
+          await fetch(webhookUrl, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: 'Tetis is down 🥀' }),
+          }).catch(err => console.error('Failed to send error webhook:', err));
+        }
+      })();
+
+      // Return early to prevent trying to send another response
+      return;
+    }
+
+    if (name === 'sudo') {
+      // Admin-only command
+      const requestingUserId = getInteractionUserId(req.body);
+      if (requestingUserId !== ADMIN_USER_ID) {
+        return res.send({
+          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+          data: { content: 'Only the admin can use this command. 🥀' },
+        });
+      }
+
+      const targetUserId = data.options?.find((option) => option.name === 'user_id')?.value;
+      const prompt = data.options?.find((option) => option.name === 'prompt')?.value;
+      const channelId = req.body.channel_id;
+      const interactionToken = req.body.token;
+      const applicationId = process.env.APP_ID;
+      const magicWord = getMagicWordForUserId(targetUserId);
+      const useMagic = Boolean(magicWord);
+      const styleLogTag = useMagic ? `[MAGIC:${magicWord}]` : '';
+
+      if (!prompt) {
+        return res.send({
+          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+          data: { content: 'Please provide a prompt.' },
+        });
+      }
+
+      if (!targetUserId) {
+        return res.send({
+          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+          data: { content: 'Please provide a target user ID.' },
+        });
+      }
+
+      // Defer the interaction immediately to acknowledge the command
+      res.send({
+        type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+      });
+
+      // Handle the LLM request asynchronously (don't await, fire and forget)
+      (async () => {
+        try {
+          // Get conversation history for this channel
+          const history = getConversationHistory(channelId);
+          console.log(`\n${styleLogTag} [Channel ${channelId}] Sudo Question (as ${targetUserId}):`, prompt);
+
+          // Format conversation context and include in prompt
+          let historyContext = formatHistoryContext(history);
+          let enhancedPrompt = historyContext
+            ? `Conversation history:\n${historyContext}\n\nNew question: ${prompt}`
+            : `${prompt}`;
+
+          // Prepend magic word to the prompt when applicable so backend can detect it
+          if (useMagic) {
+            enhancedPrompt = `${magicWord}\n\n${enhancedPrompt}`;
+          }
+
+          // Prepare the request with conversation context
+          const requestBody = {
+            prompt: enhancedPrompt,
+            history, // Include full conversation history array as well
+          };
+
+          // If no backend URL is configured, inform the user and stop.
+          if (!SERVER_URL) {
+            const webhookUrl = `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}/messages/@original`;
+            await fetch(webhookUrl, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ content: 'Tetis is down 🥀' }),
+            }).catch(err => console.error('Failed to send backend-missing webhook:', err));
+            return;
+          }
+
+          const response = await fetchWithRetry(SERVER_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody),
+          });
+
+          const data = await response.json();
+          const reply = (data.reply || 'Error: no reply returned').toString();
+          console.log(`${styleLogTag} [Channel ${channelId}] Tetis Answer:`, reply);
+          
+          // Add user message and assistant reply to history
+          addToHistory(channelId, 'user', prompt);
+          addToHistory(channelId, 'assistant', reply);
+          console.log(`[Channel ${channelId}] History length after update: ${getConversationHistory(channelId).length}\n`);
+
+          const echoedQuestion = `**${targetUserId}**: ${prompt}`;
           const fullReply = `**Tetis**: ${reply}`;
           const maxDiscordMessageLength = 2000;
           const content = `${echoedQuestion}\n${fullReply}`.slice(0, maxDiscordMessageLength);
