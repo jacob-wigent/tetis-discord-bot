@@ -14,7 +14,7 @@ const MAX_HISTORY_PER_CHANNEL = 20; // Max message pairs to keep per channel
 const MAGIC_WORD_MAP = [
   { users: ['246323461109186560'], magic: process.env.CADISTAN_STYLE_SECRET || null},
   { users: ['1095063948371431446'], magic: process.env.STUPID_STYLE_SECRET || null},
-  { users: ['536992895731892252', '489538771214270464'], magic: process.env.RUDE_STYLE_SECRET || null},
+  { users: ['536992895731892252'], magic: process.env.RUDE_STYLE_SECRET || null},
   { users: ['475447912730460160', '572154995302989844'], magic: process.env.LINKEDIN_STYLE_SECRET || null},
   { users: [''], magic: process.env.FLIRTY_STYLE_SECRET || null},
 ];
@@ -60,6 +60,35 @@ function formatHistoryContext(history) {
   return history
     .map((msg) => `${msg.role === 'user' ? 'User' : 'Tetis'}: ${msg.content}`)
     .join('\n');
+}
+
+/**
+ * Retry fetch with exponential backoff
+ * Useful for waiting for backend server to start up
+ */
+async function fetchWithRetry(url, options, maxRetries = 7) {
+  let lastError;
+  
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+      if (response.ok) {
+        return response;
+      }
+      // If response is not ok, throw to trigger retry
+      throw new Error(`Backend returned ${response.status}`);
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxRetries) {
+        // Exponential backoff: 500ms, 1s, 2s, 4s, 8s, 16s, 32s, 64s
+        const delayMs = 500 * Math.pow(2, attempt);
+        console.log(`Retry attempt ${attempt + 1}/${maxRetries} after ${delayMs}ms due to: ${error.message}`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  
+  throw lastError || new Error('Max retries reached');
 }
 
 function getInteractionUserId(payload) {
@@ -153,15 +182,11 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
             return;
           }
 
-          const response = await fetch(SERVER_URL, {
+          const response = await fetchWithRetry(SERVER_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(requestBody),
           });
-
-          if (!response.ok) {
-            throw new Error(`Backend returned ${response.status}`);
-          }
 
           const data = await response.json();
           const reply = (data.reply || 'Error: no reply returned').toString();
