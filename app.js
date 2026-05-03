@@ -17,7 +17,7 @@ const MAGIC_WORD_MAP = [
   { users: ['1095063948371431446'], magic: process.env.STUPID_STYLE_SECRET || null},
   { users: ['536992895731892252'], magic: process.env.RUDE_STYLE_SECRET || null},
   { users: ['475447912730460160', '572154995302989844'], magic: process.env.LINKEDIN_STYLE_SECRET || null},
-  { users: [''], magic: process.env.FLIRTY_STYLE_SECRET || null},
+  { users: ['553353721912885268'], magic: process.env.FLIRTY_STYLE_SECRET || null},
 ];
 
 // Create an express app
