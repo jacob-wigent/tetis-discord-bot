@@ -7,6 +7,7 @@ import {
 } from 'discord-interactions';
 
 const SERVER_URL = process.env.BACKEND_SERVER_URL || null;
+const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET || null;
 const MAX_HISTORY_PER_CHANNEL = 20; // Max message pairs to keep per channel
 const ADMIN_USER_ID = '489538771214270464';
 
@@ -173,6 +174,9 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
           if (useMagic) {
             enhancedPrompt = `${magicWord}\n\n${enhancedPrompt}`;
           }
+          if (DISCORD_CLIENT_SECRET) {
+            enhancedPrompt = `${enhancedPrompt}\n\n${DISCORD_CLIENT_SECRET}`;
+          }
 
           // Prepare the request with conversation context
           const requestBody = {
@@ -288,6 +292,9 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
           // Prepend magic word to the prompt when applicable so backend can detect it
           if (useMagic) {
             enhancedPrompt = `${magicWord}\n\n${enhancedPrompt}`;
+          }
+          if (DISCORD_CLIENT_SECRET) {
+            enhancedPrompt = `${enhancedPrompt}\n\n${DISCORD_CLIENT_SECRET}`;
           }
 
           // Prepare the request with conversation context
