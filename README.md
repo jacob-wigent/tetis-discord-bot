@@ -1,12 +1,6 @@
 # Tetis Discord Bot
 
-dumb vibe-coded LLM discord bot 👍
-
-this is the discord version of TetisGPT (a “physics assistant” in theory)
-
-in practice it’s just an LLM hooked up to discord with some slash commands
-
-it mostly works.
+Vibe-coded Discord bot (a “physics assistant” in theory). In practice it’s just an LLM hooked up to Discord with a few commands.
 
 ## Setup
 
@@ -28,7 +22,6 @@ npm run register
 ```bash
 node app.js
 ```
-if you’re not a masochist:
 
 ```bash
 npm install -g nodemon
@@ -54,4 +47,4 @@ go to your discord app settings → paste this as:
 https://1234-someurl.ngrok.io/interactions
 ```
 
-save and you’re good
+save and you’re good!
